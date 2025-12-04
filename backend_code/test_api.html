@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Test Suite - Outlook Email App</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        
+        .config-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        
+        .config-section h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: transform 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .test-section {
+            margin-bottom: 30px;
+        }
+        
+        .test-section h2 {
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .test-item {
+            background: #f8f9fa;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .test-item h3 {
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+        
+        .test-item p {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        
+        .test-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .btn-test {
+            background: #28a745;
+            padding: 8px 16px;
+            font-size: 13px;
+        }
+        
+        .btn-test:hover {
+            background: #218838;
+        }
+        
+        .btn-test-all {
+            background: #007bff;
+            padding: 10px 20px;
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+        
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 13px;
+            display: none;
+        }
+        
+        .result.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+        
+        .result.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+        
+        .result.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+            display: block;
+        }
+        
+        .summary {
+            background: #e7f3ff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 30px;
+        }
+        
+        .summary h2 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        
+        .summary-stats {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .stat {
+            flex: 1;
+            min-width: 150px;
+            text-align: center;
+            padding: 15px;
+            background: white;
+            border-radius: 5px;
+        }
+        
+        .stat-value {
+            font-size: 32px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .stat-label {
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .stat.passed .stat-value {
+            color: #28a745;
+        }
+        
+        .stat.failed .stat-value {
+            color: #dc3545;
+        }
+        
+        .stat.total .stat-value {
+            color: #007bff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 API Test Suite</h1>
+        <p class="subtitle">Test all endpoints of the Outlook Email Application</p>
+        
+        <div class="config-section">
+            <h2>⚙️ Configuration</h2>
+            <div class="form-group">
+                <label for="baseUrl">Base URL:</label>
+                <input type="text" id="baseUrl" value="http://localhost:5000" placeholder="http://localhost:5000">
+            </div>
+            <div class="form-group">
+                <label for="testEmail">Test Email:</label>
+                <input type="text" id="testEmail" value="test@example.com" placeholder="test@example.com">
+            </div>
+            <button class="btn-test-all" onclick="runAllTests()">🚀 Run All Tests</button>
+        </div>
+        
+        <div class="test-section">
+            <h2>1. Basic Endpoints</h2>
+            <div class="test-item">
+                <h3>Home Page Redirect</h3>
+                <p>GET / - Should redirect to /app</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/', null, 'Home Page')">Test</button>
+                </div>
+                <div class="result" id="result-home"></div>
+            </div>
+            
+            <div class="test-item">
+                <h3>App Page</h3>
+                <p>GET /app - Should return main app page</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/app', null, 'App Page')">Test</button>
+                </div>
+                <div class="result" id="result-app"></div>
+            </div>
+            
+            <div class="test-item">
+                <h3>Signin Redirect</h3>
+                <p>GET /signin - Should redirect to Microsoft OAuth</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/signin', null, 'Signin')">Test</button>
+                </div>
+                <div class="result" id="result-signin"></div>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h2>2. Authentication Endpoints</h2>
+            <div class="test-item">
+                <h3>Get User Profile</h3>
+                <p>GET /get-user-profile - Should return 401 if not authenticated</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/get-user-profile', null, 'User Profile')">Test</button>
+                </div>
+                <div class="result" id="result-user-profile"></div>
+            </div>
+            
+            <div class="test-item">
+                <h3>Get Registered Users</h3>
+                <p>GET /get-registered-users - Should return 401 if not authenticated</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/get-registered-users', null, 'Registered Users')">Test</button>
+                </div>
+                <div class="result" id="result-registered-users"></div>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h2>3. Email Sending Endpoints</h2>
+            <div class="test-item">
+                <h3>Send Mail (JSON)</h3>
+                <p>POST /send-mail - Send email with JSON payload</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testSendMail()">Test</button>
+                </div>
+                <div class="result" id="result-send-mail"></div>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h2>4. Email Retrieval Endpoints</h2>
+            <div class="test-item">
+                <h3>Get Recent Emails</h3>
+                <p>GET /get-mails/10 - Get 10 recent emails</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/get-mails/10', null, 'Get Emails')">Test</button>
+                </div>
+                <div class="result" id="result-get-mails"></div>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h2>5. Campaign Endpoints</h2>
+            <div class="test-item">
+                <h3>Get Campaign Details</h3>
+                <p>GET /api/campaign/{campaign_id} - Get campaign details</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/api/campaign/test-123', null, 'Campaign Details')">Test</button>
+                </div>
+                <div class="result" id="result-campaign"></div>
+            </div>
+            
+            <div class="test-item">
+                <h3>Get Campaign Analytics</h3>
+                <p>GET /api/analytics/campaign/{campaign_id} - Get campaign analytics</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/api/analytics/campaign/test-123', null, 'Campaign Analytics')">Test</button>
+                </div>
+                <div class="result" id="result-analytics"></div>
+            </div>
+            
+            <div class="test-item">
+                <h3>Get Campaign Logs</h3>
+                <p>GET /get-campaign-logs - Get recent campaign logs</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/get-campaign-logs', null, 'Campaign Logs')">Test</button>
+                </div>
+                <div class="result" id="result-campaign-logs"></div>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h2>6. Tracking Endpoints</h2>
+            <div class="test-item">
+                <h3>Get Email Tracking</h3>
+                <p>GET /api/tracking/email/{tracking_id} - Get email tracking details</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/api/tracking/email/test-123', null, 'Email Tracking')">Test</button>
+                </div>
+                <div class="result" id="result-tracking"></div>
+            </div>
+            
+            <div class="test-item">
+                <h3>Resend Email</h3>
+                <p>POST /api/tracking/resend/{tracking_id} - Resend email</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('POST', '/api/tracking/resend/test-123', null, 'Resend Email')">Test</button>
+                </div>
+                <div class="result" id="result-resend"></div>
+            </div>
+            
+            <div class="test-item">
+                <h3>Track Email Open</h3>
+                <p>GET /api/track/open/{tracking_id} - Track email open (returns pixel)</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/api/track/open/test-123', null, 'Track Open')">Test</button>
+                </div>
+                <div class="result" id="result-track-open"></div>
+            </div>
+            
+            <div class="test-item">
+                <h3>Track Email Click</h3>
+                <p>GET /api/track/click/{tracking_id}?url=... - Track link click</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/api/track/click/test-123?url=https://example.com', null, 'Track Click')">Test</button>
+                </div>
+                <div class="result" id="result-track-click"></div>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h2>7. Warmup Endpoints</h2>
+            <div class="test-item">
+                <h3>Start Warmup Campaign</h3>
+                <p>POST /start-warmup - Start email warmup campaign</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testStartWarmup()">Test</button>
+                </div>
+                <div class="result" id="result-warmup"></div>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h2>8. Session Endpoints</h2>
+            <div class="test-item">
+                <h3>Logout</h3>
+                <p>GET /logout - Clear session and redirect</p>
+                <div class="test-buttons">
+                    <button class="btn-test" onclick="testEndpoint('GET', '/logout', null, 'Logout')">Test</button>
+                </div>
+                <div class="result" id="result-logout"></div>
+            </div>
+        </div>
+        
+        <div class="summary">
+            <h2>📊 Test Summary</h2>
+            <div class="summary-stats">
+                <div class="stat passed">
+                    <div class="stat-value" id="stat-passed">0</div>
+                    <div class="stat-label">Passed</div>
+                </div>
+                <div class="stat failed">
+                    <div class="stat-value" id="stat-failed">0</div>
+                    <div class="stat-label">Failed</div>
+                </div>
+                <div class="stat total">
+                    <div class="stat-value" id="stat-total">0</div>
+                    <div class="stat-label">Total</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const baseUrl = () => document.getElementById('baseUrl').value;
+        let testResults = { passed: 0, failed: 0, total: 0 };
+        
+        function updateSummary() {
+            document.getElementById('stat-passed').textContent = testResults.passed;
+            document.getElementById('stat-failed').textContent = testResults.failed;
+            document.getElementById('stat-total').textContent = testResults.total;
+        }
+        
+        function showResult(elementId, success, message, data = null) {
+            const resultDiv = document.getElementById(elementId);
+            resultDiv.className = 'result ' + (success ? 'success' : 'error');
+            
+            let content = message;
+            if (data) {
+                content += '\n\n' + JSON.stringify(data, null, 2);
+            }
+            resultDiv.textContent = content;
+            resultDiv.style.display = 'block';
+            
+            testResults.total++;
+            if (success) {
+                testResults.passed++;
+            } else {
+                testResults.failed++;
+            }
+            updateSummary();
+        }
+        
+        async function testEndpoint(method, endpoint, data, name) {
+            const url = baseUrl() + endpoint;
+            const resultId = 'result-' + name.toLowerCase().replace(/\s+/g, '-');
+            
+            try {
+                const options = {
+                    method: method,
+                    headers: {}
+                };
+                
+                if (data) {
+                    options.headers['Content-Type'] = 'application/json';
+                    options.body = JSON.stringify(data);
+                }
+                
+                const response = await fetch(url, options);
+                const status = response.status;
+                
+                let responseData = null;
+                const contentType = response.headers.get('content-type');
+                
+                if (contentType && contentType.includes('application/json')) {
+                    responseData = await response.json();
+                } else {
+                    responseData = await response.text();
+                }
+                
+                // Check if status is acceptable (200-299, or expected errors like 401, 404)
+                const isSuccess = status >= 200 && status < 300 || status === 401 || status === 404 || status === 302;
+                
+                showResult(
+                    resultId,
+                    isSuccess,
+                    `${method} ${endpoint}\nStatus: ${status}\n${isSuccess ? '✓ Success' : '✗ Failed'}`,
+                    responseData
+                );
+            } catch (error) {
+                showResult(
+                    resultId,
+                    false,
+                    `${method} ${endpoint}\nError: ${error.message}\n✗ Failed`,
+                    null
+                );
+            }
+        }
+        
+        async function testSendMail() {
+            const testEmail = document.getElementById('testEmail').value;
+            const data = {
+                recipients: [
+                    { name: "Test User", email: testEmail }
+                ],
+                subject: "Test Email Subject",
+                message: "This is a test email message. Hi {name}!"
+            };
+            
+            await testEndpoint('POST', '/send-mail', data, 'Send Mail');
+        }
+        
+        async function testStartWarmup() {
+            const data = {
+                delay_between_emails: 60,
+                delete_after_minutes: 1,
+                cleanup_recipient_mailbox: true
+            };
+            
+            await testEndpoint('POST', '/start-warmup', data, 'Warmup');
+        }
+        
+        async function runAllTests() {
+            testResults = { passed: 0, failed: 0, total: 0 };
+            
+            // Clear all results
+            document.querySelectorAll('.result').forEach(el => {
+                el.style.display = 'none';
+                el.textContent = '';
+            });
+            
+            // Run all tests sequentially
+            const tests = [
+                () => testEndpoint('GET', '/', null, 'Home Page'),
+                () => testEndpoint('GET', '/app', null, 'App Page'),
+                () => testEndpoint('GET', '/signin', null, 'Signin'),
+                () => testEndpoint('GET', '/get-user-profile', null, 'User Profile'),
+                () => testEndpoint('GET', '/get-registered-users', null, 'Registered Users'),
+                () => testSendMail(),
+                () => testEndpoint('GET', '/get-mails/10', null, 'Get Emails'),
+                () => testEndpoint('GET', '/api/campaign/test-123', null, 'Campaign Details'),
+                () => testEndpoint('GET', '/api/analytics/campaign/test-123', null, 'Campaign Analytics'),
+                () => testEndpoint('GET', '/get-campaign-logs', null, 'Campaign Logs'),
+                () => testEndpoint('GET', '/api/tracking/email/test-123', null, 'Email Tracking'),
+                () => testEndpoint('POST', '/api/tracking/resend/test-123', null, 'Resend Email'),
+                () => testEndpoint('GET', '/api/track/open/test-123', null, 'Track Open'),
+                () => testEndpoint('GET', '/api/track/click/test-123?url=https://example.com', null, 'Track Click'),
+                () => testStartWarmup(),
+                () => testEndpoint('GET', '/logout', null, 'Logout')
+            ];
+            
+            for (const test of tests) {
+                await test();
+                await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between tests
+            }
+        }
+    </script>
+</body>
+</html>
+
