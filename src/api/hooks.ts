@@ -66,7 +66,7 @@ export function useUserProfile() {
     return useQuery<UserProfile>({
         queryKey: ['userProfile'],
         queryFn: async () => {
-            const { data } = await apiClient.get('/get-user-profile');
+            const { data } = await apiClient.get('/api/get-user-profile');
             return data;
         },
         retry: false,
@@ -80,7 +80,7 @@ export function useLogout() {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async () => {
-            await apiClient.get('/logout');
+            await apiClient.get('/api/logout');
         },
         onSuccess: () => {
             queryClient.clear();
@@ -333,7 +333,7 @@ export function useCreateCampaign() {
 
     return useMutation({
         mutationFn: async (campaignData: any) => {
-            const { data } = await apiClient.post('/send-mail', campaignData, {
+            const { data } = await apiClient.post('/api/send-mail', campaignData, {
                 headers: {
                     'X-Clerk-User-Id': clerkUser?.id || ''
                 }
@@ -352,8 +352,8 @@ export function useEmailTracking(campaignId?: string) {
         queryKey: ['emailTracking', campaignId],
         queryFn: async () => {
             const url = campaignId
-                ? `/get-email-tracking?campaign_id=${campaignId}`
-                : '/get-email-tracking';
+                ? `/api/get-email-tracking?campaign_id=${campaignId}`
+                : '/api/get-email-tracking';
             const { data } = await apiClient.get(url);
             return data.tracking || [];
         },
@@ -383,7 +383,7 @@ export function useRegisteredUsers() {
     return useQuery({
         queryKey: ['registeredUsers'],
         queryFn: async () => {
-            const { data } = await apiClient.get('/get-registered-users');
+            const { data } = await apiClient.get('/api/get-registered-users');
             return data;
         },
     });
@@ -393,7 +393,7 @@ export function useRegisteredUsers() {
 export function useStartWarmup() {
     return useMutation({
         mutationFn: async (warmupData: any) => {
-            const { data } = await apiClient.post('/start-warmup', warmupData);
+            const { data } = await apiClient.post('/api/start-warmup', warmupData);
             return data;
         },
     });
@@ -404,7 +404,7 @@ export function useCampaignLogs() {
     return useQuery({
         queryKey: ['campaignLogs'],
         queryFn: async () => {
-            const { data } = await apiClient.get('/get-campaign-logs');
+            const { data } = await apiClient.get('/api/get-campaign-logs');
             return data.logs || [];
         },
     });

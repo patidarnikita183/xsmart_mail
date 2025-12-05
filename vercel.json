@@ -7,6 +7,10 @@
             "config": {
                 "maxLambdaSize": "15mb"
             }
+        },
+        {
+            "src": "package.json",
+            "use": "@vercel/next"
         }
     ],
     "routes": [
@@ -16,7 +20,7 @@
         },
         {
             "src": "/(.*)",
-            "dest": "backend_code/app.py"
+            "dest": "/$1"
         }
     ],
     "env": {
