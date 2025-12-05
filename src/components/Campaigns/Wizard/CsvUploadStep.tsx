@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { useDropzone } from "react-dropzone"; // I need to install this or just use simple input
 import Papa from "papaparse";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
