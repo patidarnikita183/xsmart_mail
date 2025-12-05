@@ -1,10 +1,11 @@
-# main.py
 import re
 import os
 import sys
 
-# Add current directory to sys.path so that local modules can be imported
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Ensure current directory is in sys.path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
 
 import html
 import requests
@@ -14,11 +15,20 @@ import pandas as pd
 from datetime import datetime, timezone
 from flask import Flask, Blueprint, render_template, redirect, url_for, session, jsonify, request
 from flask_cors import CORS
-from auth import get_auth_url, get_access_token, make_graph_request
-from enhanced_email_warmup import EnhancedEmailWarmupService
-from database import DatabaseManager
-from background_service import BackgroundWarmupService
-from config import Config
+
+# Import local modules with fallback for Vercel
+try:
+    from auth import get_auth_url, get_access_token, make_graph_request
+    from enhanced_email_warmup import EnhancedEmailWarmupService
+    from database import DatabaseManager
+    from background_service import BackgroundWarmupService
+    from config import Config
+except ImportError:
+    from backend_code.auth import get_auth_url, get_access_token, make_graph_request
+    from backend_code.enhanced_email_warmup import EnhancedEmailWarmupService
+    from backend_code.database import DatabaseManager
+    from backend_code.background_service import BackgroundWarmupService
+    from backend_code.config import Config
 
 # Helper function to refresh access token
 def refresh_access_token(refresh_token_value):
