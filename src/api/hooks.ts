@@ -36,6 +36,7 @@ export interface Campaign {
     clicked: number;
     open_rate: number;
     bounce_rate: number;
+    status: string;
 }
 
 export interface EmailTracking {
@@ -54,6 +55,10 @@ export interface EmailTracking {
     first_open?: string;
     first_click?: string;
     reply_date?: string;
+    application_error?: boolean;
+    error_date?: string;
+    unsubscribe_date?: string;
+    bounce_date?: string;
 }
 
 // Auth hooks
@@ -170,7 +175,10 @@ export function useConnectOutlook() {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: async () => {
-            const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+            const API_URL = process.env.NEXT_PUBLIC_API_URL;
+            if (!API_URL) {
+                throw new Error('NEXT_PUBLIC_API_URL environment variable is not set');
+            }
 
             // Get Clerk user ID from the auth context or localStorage
             // We need to get it dynamically since hooks can't be used here

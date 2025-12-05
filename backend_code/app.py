@@ -111,7 +111,7 @@ def check_campaign_conflicts(clerk_user_id, new_start_time, new_duration):
     """Check if new campaign overlaps with existing campaigns"""
     from datetime import timedelta
     
-    if not db_manager or not db_manager.db:
+    if not db_manager or db_manager.db is None:
         return []
     
     campaigns_collection = db_manager.db['email_campaigns']
@@ -167,9 +167,13 @@ def send_emails_in_background(campaign_id, mailbox_id, sender_email, subject, me
     from bson import ObjectId
     
     print(f"📧 Background email sender started for campaign {campaign_id}")
+    print(f"🐛 DEBUG: start_time={start_time}, duration={duration}, interval={send_interval}, recipients={len(recipients)}")
+    print(f"🐛 DEBUG: start_time type={type(start_time)}")
+
     
-    if not db_manager or not db_manager.db:
+    if not db_manager or db_manager.db is None:
         print(f"❌ Database not available for campaign {campaign_id}")
+        print(f"   Campaign {campaign_id} cannot start. Please check database connection.")
         return
     
     campaigns_collection = db_manager.db['email_campaigns']
@@ -198,11 +202,20 @@ def send_emails_in_background(campaign_id, mailbox_id, sender_email, subject, me
         
         sent_count = 0
         failed_count = 0
+        consecutive_failures = 0
+        max_consecutive_failures = 5  # Stop campaign after 5 consecutive failures
         
         for idx, recipient in enumerate(recipients):
+            # Check if campaign was stopped
+            # We check the DB directly to ensure we catch the stop signal immediately
+            current_status_doc = campaigns_collection.find_one({'campaign_id': campaign_id}, {'status': 1})
+            if current_status_doc and current_status_doc.get('status') == 'stopped':
+                print(f"🛑 Campaign {campaign_id} was stopped by user. Aborting remaining emails.")
+                break
+
             # Calculate when this email should be sent
             if idx > 0:
-                current_send_time = current_send_time + timedelta(minutes=send_interval)
+                current_send_time = current_send_time + timedelta(minutes=float(send_interval))
             
             # Check if we're past campaign end time
             if current_send_time > campaign_end_time:
@@ -214,8 +227,10 @@ def send_emails_in_background(campaign_id, mailbox_id, sender_email, subject, me
             if current_send_time > now:
                 wait_seconds = (current_send_time - now).total_seconds()
                 if wait_seconds > 0:
-                    print(f"⏳ Waiting {wait_seconds:.1f}s before sending to {recipient.get('email')}...")
+                    print(f"⏳ Waiting {wait_seconds:.1f}s before sending to {recipient.get('email')} (Interval: {send_interval}m)...")
                     time.sleep(wait_seconds)
+            else:
+                print(f"⚡ Sending immediately (Time: {current_send_time.isoformat()} <= Now: {now.isoformat()})")
             
             # Apply rate limiting
             email_rate_limiter.wait_if_needed()
@@ -345,6 +360,7 @@ def send_emails_in_background(campaign_id, mailbox_id, sender_email, subject, me
                 # Check if send was successful
                 if http_status in [200, 202]:
                     sent_count += 1
+                    consecutive_failures = 0  # Reset failure counter on success
                     
                     # Save tracking data
                     tracking_doc = {
@@ -361,6 +377,7 @@ def send_emails_in_background(campaign_id, mailbox_id, sender_email, subject, me
                         'unsubscribed': False,
                         'replies': 0,
                         'bounced': False,
+                        'delivered': True,  # Successfully delivered to email server
                         'first_open': None,
                         'first_click': None,
                         'unsubscribe_date': None,
@@ -370,7 +387,15 @@ def send_emails_in_background(campaign_id, mailbox_id, sender_email, subject, me
                     print(f"✅ Sent email to {recipient_email}")
                 else:
                     failed_count += 1
-                    # Create bounce tracking
+                    consecutive_failures += 1
+                    
+                    # Determine if this is an actual bounce (email server rejection) or application error
+                    # HTTP 4xx errors (except 401) are usually bounces from email server
+                    # HTTP 5xx and other errors are application/network errors
+                    is_actual_bounce = (400 <= http_status < 500 and http_status != 401)
+                    is_application_error = not is_actual_bounce
+                    
+                    # Create tracking document - mark as not delivered for application errors
                     tracking_doc = {
                         'tracking_id': tracking_id,
                         'campaign_id': campaign_id,
@@ -384,22 +409,45 @@ def send_emails_in_background(campaign_id, mailbox_id, sender_email, subject, me
                         'clicks': 0,
                         'unsubscribed': False,
                         'replies': 0,
-                        'bounced': True,
-                        'bounce_reason': f'HTTP {http_status}',
-                        'bounce_date': datetime.now(timezone.utc),
+                        'bounced': is_actual_bounce,  # Only true for actual email server bounces
+                        'delivered': False,  # Not delivered
+                        'application_error': is_application_error,  # Flag for application errors
+                        'error_reason': f'HTTP {http_status}',
+                        'bounce_reason': f'HTTP {http_status}' if is_actual_bounce else None,
+                        'bounce_date': datetime.now(timezone.utc) if is_actual_bounce else None,
+                        'error_date': datetime.now(timezone.utc) if is_application_error else None,
                         'first_open': None,
                         'first_click': None,
                         'unsubscribe_date': None,
                         'reply_date': None
                     }
                     tracking_collection.insert_one(tracking_doc)
-                    print(f"❌ Failed to send to {recipient_email}: HTTP {http_status}")
+                    
+                    if is_application_error:
+                        print(f"❌ Application error sending to {recipient_email}: HTTP {http_status} (not delivered)")
+                    else:
+                        print(f"❌ Failed to send to {recipient_email}: HTTP {http_status} (bounced)")
+                    
+                    # Stop campaign if too many consecutive failures
+                    if consecutive_failures >= max_consecutive_failures:
+                        print(f"🛑 Stopping campaign {campaign_id} due to {consecutive_failures} consecutive failures")
+                        safe_db_update(
+                            campaigns_collection,
+                            {'campaign_id': campaign_id},
+                            {'$set': {
+                                'status': 'stopped',
+                                'error': f'Campaign stopped due to {consecutive_failures} consecutive failures',
+                                'updated_at': datetime.now(timezone.utc)
+                            }}
+                        )
+                        break
                     
             except Exception as e:
                 print(f"❌ Failed to send email to {recipient_email}: {e}")
                 failed_count += 1
+                consecutive_failures += 1
                 
-                # Log error to database
+                # Application errors should be marked as not delivered, not bounced
                 tracking_collection.insert_one({
                     'tracking_id': str(uuid.uuid4()),
                     'campaign_id': campaign_id,
@@ -408,15 +456,33 @@ def send_emails_in_background(campaign_id, mailbox_id, sender_email, subject, me
                     'recipient_name': recipient_name,
                     'subject': personalized_subject,
                     'message': personalized_message,
-                    'bounced': True,
-                    'bounce_reason': f'Background send error: {str(e)}',
-                    'bounce_date': datetime.now(timezone.utc),
+                    'bounced': False,  # Not a bounce - it's an application error
+                    'delivered': False,  # Not delivered
+                    'application_error': True,  # Flag as application error
+                    'error_reason': f'Application error: {str(e)}',
+                    'bounce_reason': None,  # Not a bounce
+                    'bounce_date': None,
+                    'error_date': datetime.now(timezone.utc),
                     'sent_at': datetime.now(timezone.utc),
                     'opens': 0,
                     'clicks': 0,
                     'unsubscribed': False,
                     'replies': 0
                 })
+                
+                # Stop campaign if too many consecutive failures
+                if consecutive_failures >= max_consecutive_failures:
+                    print(f"🛑 Stopping campaign {campaign_id} due to {consecutive_failures} consecutive failures")
+                    safe_db_update(
+                        campaigns_collection,
+                        {'campaign_id': campaign_id},
+                        {'$set': {
+                            'status': 'stopped',
+                            'error': f'Campaign stopped due to {consecutive_failures} consecutive failures',
+                            'updated_at': datetime.now(timezone.utc)
+                        }}
+                    )
+                    break
             
             # Update campaign progress
             safe_db_update(
@@ -476,8 +542,19 @@ app.config['SESSION_COOKIE_DOMAIN'] = None  # Don't restrict domain
 app.config['SESSION_COOKIE_PATH'] = '/'  # Available for all paths
 
 # Configure CORS to allow frontend to access backend with credentials
+# Get frontend URL from environment variable
+frontend_origins = []
+if Config.FRONTEND_URL:
+    frontend_origins.append(Config.FRONTEND_URL)
+    # Also add 127.0.0.1 variant if localhost is used (for development)
+    if "localhost" in Config.FRONTEND_URL:
+        frontend_origins.append(Config.FRONTEND_URL.replace("localhost", "127.0.0.1"))
+else:
+    print("⚠️  WARNING: FRONTEND_URL not set in environment variables")
+    print("   CORS will be restricted. Please set FRONTEND_URL in your .env file")
+
 CORS(app, 
-     origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+     origins=frontend_origins if frontend_origins else [],
      supports_credentials=True,
      allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-Clerk-User-Id"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -690,7 +767,7 @@ def exchange_token():
     # Handle CORS preflight
     if request.method == 'OPTIONS':
         response = jsonify({'status': 'ok'})
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Origin', Config.FRONTEND_URL)
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         response.headers.add('Access-Control-Allow-Credentials', 'true')
@@ -756,7 +833,7 @@ def exchange_token():
         
         # CORS headers are handled by the global after_request handler
         # But we can also set them here explicitly
-        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Origin', Config.FRONTEND_URL)
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         
         return response, 200
@@ -813,7 +890,7 @@ def oauth_callback():
                     owner_clerk_id = request.headers.get('X-Clerk-User-Id') or request.args.get('clerk_user_id')
                     
                     if not owner_clerk_id:
-                        frontend_url = Config.BASE_URL or 'http://localhost:3000'
+                        frontend_url = Config.FRONTEND_URL
                         return redirect(f"{frontend_url}/email-accounts?account_added=error&reason=clerk_user_id_required")
                     else:
                         # Store it in session for future use
@@ -841,7 +918,7 @@ def oauth_callback():
                 user = db_manager.get_user_by_clerk_id(owner_clerk_id) if db_manager else None
                 if not user:
                     print(f"⚠️  ERROR: User not found in database for Clerk ID: {owner_clerk_id}")
-                    frontend_url = Config.BASE_URL or 'http://localhost:3000'
+                    frontend_url = Config.FRONTEND_URL
                     return redirect(f"{frontend_url}/email-accounts?account_added=error&reason=user_not_found")
                 
                 user_id = user.get('user_id')
@@ -876,12 +953,12 @@ def oauth_callback():
                     # Redirect back to email-accounts page
                     # Frontend will fetch mailboxes from linkbox_box_table using Clerk user ID
                     # NO session data is used for mailbox operations
-                    frontend_url = Config.BASE_URL or 'http://localhost:3000'
+                    frontend_url = Config.FRONTEND_URL
                     session.pop('oauth_flow', None)
                     return redirect(f"{frontend_url}/email-accounts?account_added=success&clerk_user_id={owner_clerk_id}")
                 else:
                     print(f"❌ Failed to save mailbox to linkbox_box_table: {mailbox_result.get('error')}")
-                    frontend_url = Config.BASE_URL or 'http://localhost:3000'
+                    frontend_url = Config.FRONTEND_URL
                     return redirect(f"{frontend_url}/email-accounts?account_added=error")
             else:
                 # Login flow - MUST have Clerk user ID (NO SESSION FALLBACK)
@@ -890,14 +967,14 @@ def oauth_callback():
                 
                 if not clerk_user_id:
                     print("⚠️  ERROR: Clerk user ID is required for login flow. No session fallback.")
-                    frontend_url = Config.BASE_URL or 'http://localhost:3000'
+                    frontend_url = Config.FRONTEND_URL
                     return redirect(f"{frontend_url}/?auth=error&reason=clerk_user_id_required")
                 
                 # Get user_id from user_information_table using Clerk ID
                 user = db_manager.get_user_by_clerk_id(clerk_user_id) if db_manager else None
                 if not user:
                     print(f"⚠️  ERROR: User not found in database for Clerk ID: {clerk_user_id}")
-                    frontend_url = Config.BASE_URL or 'http://localhost:3000'
+                    frontend_url = Config.FRONTEND_URL
                     return redirect(f"{frontend_url}/?auth=error&reason=user_not_found")
                 
                 user_id = user.get('user_id')
@@ -987,21 +1064,21 @@ def oauth_callback():
                     session.pop('oauth_flow', None)
                     print("Redirecting to frontend with success")
                     # Redirect to Next.js frontend with temporary token
-                    frontend_url = Config.BASE_URL or 'http://localhost:3000'
+                    frontend_url = Config.FRONTEND_URL
                     return redirect(f"{frontend_url}/?auth=success&token={temp_token}")
                 else:
                     print(f"Error saving user data for {user_email}")
-                    frontend_url = Config.BASE_URL or 'http://localhost:3000'
+                    frontend_url = Config.FRONTEND_URL
                     return redirect(f"{frontend_url}/?auth=error")
         else:
             print(f"Error getting user profile: {user_profile['error']}")
-            frontend_url = Config.BASE_URL or 'http://localhost:3000'
+            frontend_url = Config.FRONTEND_URL
             if is_adding_account:
                 return redirect(f"{frontend_url}/email-accounts?account_added=error")
             return redirect(f"{frontend_url}/?auth=error")
     else:
         print(f"Token acquisition error: {token_response}")
-        frontend_url = Config.BASE_URL or 'http://localhost:3000'
+        frontend_url = Config.FRONTEND_URL
         if is_adding_account:
             return redirect(f"{frontend_url}/email-accounts?account_added=error")
         return redirect(f"{frontend_url}/?auth=error")
@@ -1870,23 +1947,66 @@ def get_campaign(campaign_id):
         # Get tracking data for this campaign
         tracking_docs = list(tracking_collection.find({'campaign_id': campaign_id}))
         
+        # Calculate statistics
+        # Distinguish between bounces and application errors
+        total_tracking = len(tracking_docs)
+        bounce_count = sum(1 for doc in tracking_docs if doc.get('bounced', False) == True)
+        application_error_count = sum(1 for doc in tracking_docs if doc.get('application_error', False) == True)
+        
+        # Successfully sent = delivered to email server
+        successfully_sent_docs = [
+            doc for doc in tracking_docs 
+            if doc.get('delivered', False) == True or 
+               (not doc.get('bounced', False) and not doc.get('application_error', False))
+        ]
+        total_sent = len(successfully_sent_docs)
+        
+        unique_opens = sum(1 for doc in successfully_sent_docs if doc.get('opens', 0) > 0)
+        unique_clicks = sum(1 for doc in successfully_sent_docs if doc.get('clicks', 0) > 0)
+        total_recipients = campaign.get('total_recipients', 0)
+        
+        # Not delivered = application errors + emails never attempted
+        not_delivered_count = application_error_count + max(0, total_recipients - total_tracking)
+        
+        open_rate = (unique_opens / total_sent * 100) if total_sent > 0 else 0
+        bounce_rate = (bounce_count / total_tracking * 100) if total_tracking > 0 else 0
+        
         # Convert to JSON-serializable format
         campaign['_id'] = str(campaign['_id'])
-        if 'created_at' in campaign:
+        if 'created_at' in campaign and campaign['created_at']:
             campaign['created_at'] = campaign['created_at'].isoformat()
-        if 'updated_at' in campaign:
+        if 'updated_at' in campaign and campaign['updated_at']:
             campaign['updated_at'] = campaign['updated_at'].isoformat()
+        if 'start_time' in campaign and campaign['start_time']:
+            if isinstance(campaign['start_time'], str):
+                campaign['start_time'] = campaign['start_time']
+            else:
+                campaign['start_time'] = campaign['start_time'].isoformat()
+        
+        # Add calculated fields
+        campaign['successfully_sent'] = total_sent
+        campaign['bounced'] = bounce_count
+        campaign['opened'] = unique_opens
+        campaign['clicked'] = unique_clicks
+        campaign['open_rate'] = round(open_rate, 2)
+        campaign['bounce_rate'] = round(bounce_rate, 2)
+        campaign['not_delivered_count'] = not_delivered_count
+        campaign['application_error_count'] = application_error_count
+        campaign['total_mails'] = total_tracking
         
         tracking_data = []
         for doc in tracking_docs:
-            doc['_id'] = str(doc['_id'])
-            if 'sent_at' in doc:
-                doc['sent_at'] = doc['sent_at'].isoformat()
+            doc_copy = dict(doc)
+            doc_copy['_id'] = str(doc['_id'])
+            if 'sent_at' in doc and doc['sent_at']:
+                doc_copy['sent_at'] = doc['sent_at'].isoformat() if hasattr(doc['sent_at'], 'isoformat') else doc['sent_at']
             if 'first_open' in doc and doc['first_open']:
-                doc['first_open'] = doc['first_open'].isoformat()
+                doc_copy['first_open'] = doc['first_open'].isoformat() if hasattr(doc['first_open'], 'isoformat') else doc['first_open']
             if 'first_click' in doc and doc['first_click']:
-                doc['first_click'] = doc['first_click'].isoformat()
-            tracking_data.append(doc)
+                doc_copy['first_click'] = doc['first_click'].isoformat() if hasattr(doc['first_click'], 'isoformat') else doc['first_click']
+            if 'bounce_date' in doc and doc['bounce_date']:
+                doc_copy['bounce_date'] = doc['bounce_date'].isoformat() if hasattr(doc['bounce_date'], 'isoformat') else doc['bounce_date']
+            tracking_data.append(doc_copy)
         
         campaign['tracking_data'] = tracking_data
         
@@ -1936,11 +2056,58 @@ def get_user_campaigns():
             open_rate = (unique_opens / total_sent * 100) if total_sent > 0 else 0
             bounce_rate = (bounce_count / total_tracking * 100) if total_tracking > 0 else 0
             
+            # Determine campaign status
+            from datetime import timedelta
+            now = datetime.now(timezone.utc)
+            start_time = campaign.get('start_time')
+            duration = campaign.get('duration', 24)
+            campaign_status = campaign.get('status', 'unknown')
+            
+            # Calculate if campaign is actually active based on time
+            # IMPORTANT: Stopped campaigns should NEVER be active
+            is_active = False
+            if campaign_status != 'stopped':  # Only check time if not stopped
+                if start_time:
+                    if isinstance(start_time, str):
+                        start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                    if start_time.tzinfo is None:
+                        start_time = start_time.replace(tzinfo=timezone.utc)
+                    end_time = start_time + timedelta(hours=duration)
+                    is_active = now >= start_time and now <= end_time
+            
+            # Update status based on time and current status
+            # Don't mark as completed if campaign just started or is scheduled for future
+            if campaign_status == 'stopped':
+                # Keep stopped status, never change it
+                campaign_status = 'stopped'
+            elif campaign_status == 'scheduled':
+                if now < start_time:
+                    # Still scheduled, keep as scheduled
+                    campaign_status = 'scheduled'
+                elif is_active:
+                    # Should be active now
+                    campaign_status = 'active'
+                else:
+                    # Past end time, mark as completed
+                    campaign_status = 'completed'
+            elif campaign_status == 'active':
+                if is_active:
+                    # Still active, keep as active
+                    campaign_status = 'active'
+                else:
+                    # Past end time, mark as completed
+                    campaign_status = 'completed'
+            # For other statuses (failed, completed), keep as is
+            
             campaign_info = {
                 'campaign_id': campaign_id,
                 'subject': campaign.get('subject', 'No Subject'),
+                'status': campaign_status,
                 'created_at': campaign.get('created_at').isoformat() if campaign.get('created_at') else None,
                 'updated_at': campaign.get('updated_at').isoformat() if campaign.get('updated_at') else None,
+                'start_time': start_time.isoformat() if start_time else None,
+                'duration': duration,
+                'send_interval': campaign.get('send_interval', 5),
                 'total_recipients': campaign.get('total_recipients', 0),
                 'total_mails': total_tracking,
                 'successfully_sent': total_sent,
@@ -1948,7 +2115,8 @@ def get_user_campaigns():
                 'opened': unique_opens,
                 'clicked': unique_clicks,
                 'open_rate': round(open_rate, 2),
-                'bounce_rate': round(bounce_rate, 2)
+                'bounce_rate': round(bounce_rate, 2),
+                'is_active': is_active
             }
             campaign_list.append(campaign_info)
         
@@ -1977,14 +2145,25 @@ def get_campaign_analytics(campaign_id):
         # Get all tracking data for this campaign
         tracking_docs = list(tracking_collection.find({'campaign_id': campaign_id}))
         
-        # Calculate statistics - IMPORTANT: Only count non-bounced emails as "sent"
-        # Bounced emails should NOT be counted as sent
+        # Calculate statistics
+        # Distinguish between:
+        # 1. Actual bounces (email server rejected) - bounced = True
+        # 2. Application errors (app-side errors) - application_error = True, delivered = False
+        # 3. Successfully sent - delivered = True (or not set but no error)
         total_tracking = len(tracking_docs)
-        bounce_count = sum(1 for doc in tracking_docs if doc.get('bounced', False))
-        total_sent = total_tracking - bounce_count  # Only non-bounced emails count as sent
+        bounce_count = sum(1 for doc in tracking_docs if doc.get('bounced', False) == True)
+        application_error_count = sum(1 for doc in tracking_docs if doc.get('application_error', False) == True)
         
-        # Calculate engagement metrics only for successfully sent (non-bounced) emails
-        successfully_sent_docs = [doc for doc in tracking_docs if not doc.get('bounced', False)]
+        # Successfully sent = delivered to email server (may still bounce later, but reached server)
+        # Count emails that were delivered (delivered=True) or successfully sent (no error flags)
+        successfully_sent_docs = [
+            doc for doc in tracking_docs 
+            if doc.get('delivered', False) == True or 
+               (not doc.get('bounced', False) and not doc.get('application_error', False))
+        ]
+        total_sent = len(successfully_sent_docs)
+        
+        # Calculate engagement metrics only for successfully sent emails
         unique_opens = sum(1 for doc in successfully_sent_docs if doc.get('opens', 0) > 0)
         unique_clicks = sum(1 for doc in successfully_sent_docs if doc.get('clicks', 0) > 0)
         unsubscribe_count = sum(1 for doc in successfully_sent_docs if doc.get('unsubscribed', False))
@@ -1996,7 +2175,12 @@ def get_campaign_analytics(campaign_id):
         reply_rate = (reply_count / total_sent * 100) if total_sent > 0 else 0
         bounce_rate = (bounce_count / total_tracking * 100) if total_tracking > 0 else 0
         
-        print(f"Analytics for campaign {campaign_id}: Total={total_tracking}, Sent={total_sent}, Bounced={bounce_count}")
+        # Calculate not delivered count
+        # Includes: application errors + emails never attempted
+        total_recipients = campaign.get('total_recipients', 0)
+        not_delivered_count = application_error_count + max(0, total_recipients - total_tracking)
+        
+        print(f"Analytics for campaign {campaign_id}: Total={total_tracking}, Sent={total_sent}, Bounced={bounce_count}, AppErrors={application_error_count}, NotDelivered={not_delivered_count}")
         
         # Format recipients data and collect bounced emails
         recipients = []
@@ -2009,6 +2193,9 @@ def get_campaign_analytics(campaign_id):
             elif isinstance(bounced_status, str):
                 bounced_status = bounced_status.lower() in ('true', '1', 'yes')
             
+            application_error = doc.get('application_error', False)
+            delivered = doc.get('delivered', False)
+            
             recipient_data = {
                 'tracking_id': doc.get('tracking_id', ''),
                 'name': doc.get('recipient_name', ''),
@@ -2018,12 +2205,16 @@ def get_campaign_analytics(campaign_id):
                 'unsubscribed': doc.get('unsubscribed', False),
                 'replies': doc.get('replies', 0),
                 'bounced': bool(bounced_status),  # Ensure it's a boolean
+                'application_error': bool(application_error),  # Application-side error
+                'delivered': bool(delivered) if delivered is not None else (not bool(bounced_status) and not bool(application_error)),
                 'bounce_reason': doc.get('bounce_reason'),
+                'error_reason': doc.get('error_reason'),
                 'first_open': doc.get('first_open').isoformat() if doc.get('first_open') else None,
                 'first_click': doc.get('first_click').isoformat() if doc.get('first_click') else None,
                 'unsubscribe_date': doc.get('unsubscribe_date').isoformat() if doc.get('unsubscribe_date') else None,
                 'reply_date': doc.get('reply_date').isoformat() if doc.get('reply_date') else None,
                 'bounce_date': doc.get('bounce_date').isoformat() if doc.get('bounce_date') else None,
+                'error_date': doc.get('error_date').isoformat() if doc.get('error_date') else None,
                 'sent_at': doc.get('sent_at').isoformat() if doc.get('sent_at') else None
             }
             
@@ -2041,9 +2232,34 @@ def get_campaign_analytics(campaign_id):
                     'bounce_date': doc.get('bounce_date').isoformat() if doc.get('bounce_date') else None
                 })
         
+        # Calculate timing information
+        from datetime import timedelta
+        start_time = campaign.get('start_time')
+        duration = campaign.get('duration', 24)  # hours
+        send_interval = campaign.get('send_interval', 5)  # minutes
+        
+        # Calculate end time
+        end_time = None
+        if start_time:
+            if isinstance(start_time, str):
+                start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+            end_time = start_time + timedelta(hours=duration)
+        
+        # Calculate estimated time per email (send_interval in minutes)
+        time_per_email_minutes = send_interval
+        
+        # Determine if campaign is still active
+        now = datetime.now(timezone.utc)
+        is_active = False
+        if start_time and end_time:
+            is_active = now >= start_time and now <= end_time
+        
         return jsonify({
             'campaign_id': campaign_id,
             'subject': campaign.get('subject', ''),
+            'status': campaign.get('status', 'unknown'),
             'total_mails': total_tracking,  # Total emails attempted (including bounced)
             'total_sent': total_sent,  # Successfully sent (non-bounced)
             'successfully_sent': total_sent,  # Alias for clarity
@@ -2058,12 +2274,68 @@ def get_campaign_analytics(campaign_id):
             'total_bounced': bounce_count,  # Alias for clarity
             'bounce_rate': round(bounce_rate, 2),
             'bounced_recipients': bounced_recipients,
-            'recipients': recipients
+            'recipients': recipients,
+            # Timing information
+            'start_time': start_time.isoformat() if start_time else None,
+            'end_time': end_time.isoformat() if end_time else None,
+            'duration': duration,  # Total duration in hours
+            'send_interval': send_interval,  # Minutes between each email
+            'time_per_email_minutes': time_per_email_minutes,
+            'is_active': is_active,
+            'total_recipients': campaign.get('total_recipients', 0),
+            'not_delivered_count': not_delivered_count,
+            'application_error_count': application_error_count
         })
         
     except Exception as error:
         print(f"Error getting campaign analytics: {error}")
         return jsonify({'error': f'Error fetching analytics: {str(error)}'}), 500
+
+@main_bp.route('/api/campaign/<campaign_id>/email/<tracking_id>')
+def get_email_analytics(campaign_id, tracking_id):
+    """Get detailed analytics for a specific email"""
+    try:
+        if not db_manager or db_manager.db is None:
+            return jsonify({'error': 'Database not available'}), 503
+        
+        tracking_collection = db_manager.db['email_tracking']
+        
+        # Get tracking data for this specific email
+        tracking_doc = tracking_collection.find_one({
+            'campaign_id': campaign_id,
+            'tracking_id': tracking_id
+        })
+        
+        if not tracking_doc:
+            return jsonify({'error': 'Email tracking not found'}), 404
+        
+        # Format the response
+        email_analytics = {
+            'tracking_id': tracking_doc.get('tracking_id', ''),
+            'campaign_id': campaign_id,
+            'recipient_email': tracking_doc.get('recipient_email', ''),
+            'recipient_name': tracking_doc.get('recipient_name', ''),
+            'subject': tracking_doc.get('subject', ''),
+            'sent_at': tracking_doc.get('sent_at').isoformat() if tracking_doc.get('sent_at') else None,
+            'status': 'bounced' if tracking_doc.get('bounced', False) else 'delivered',
+            'bounced': tracking_doc.get('bounced', False),
+            'bounce_reason': tracking_doc.get('bounce_reason'),
+            'bounce_date': tracking_doc.get('bounce_date').isoformat() if tracking_doc.get('bounce_date') else None,
+            'opens': tracking_doc.get('opens', 0),
+            'clicks': tracking_doc.get('clicks', 0),
+            'replies': tracking_doc.get('replies', 0),
+            'unsubscribed': tracking_doc.get('unsubscribed', False),
+            'first_open': tracking_doc.get('first_open').isoformat() if tracking_doc.get('first_open') else None,
+            'first_click': tracking_doc.get('first_click').isoformat() if tracking_doc.get('first_click') else None,
+            'reply_date': tracking_doc.get('reply_date').isoformat() if tracking_doc.get('reply_date') else None,
+            'unsubscribe_date': tracking_doc.get('unsubscribe_date').isoformat() if tracking_doc.get('unsubscribe_date') else None,
+        }
+        
+        return jsonify(email_analytics)
+        
+    except Exception as error:
+        print(f"Error getting email analytics: {error}")
+        return jsonify({'error': f'Error fetching email analytics: {str(error)}'}), 500
 
 @main_bp.route('/api/tracking/email/<tracking_id>')
 def get_email_tracking(tracking_id):
@@ -3022,7 +3294,7 @@ def add_account():
             print(f"   Query params: {request.args}")
             print(f"   Headers: X-Clerk-User-Id = {request.headers.get('X-Clerk-User-Id')}")
             print(f"   Session keys: {list(session.keys())}")
-            frontend_url = Config.BASE_URL or 'http://localhost:3000'
+            frontend_url = Config.FRONTEND_URL
             return redirect(f"{frontend_url}/email-accounts?account_added=error&reason=clerk_user_id_required")
     
     # Store Clerk user ID in session for OAuth callback
@@ -3086,21 +3358,63 @@ def get_dashboard_analytics():
             # Get all campaigns for this user
             campaigns = list(db_manager.db['email_campaigns'].find({'user_email': user_email}))
         
-        # Calculate aggregated stats
-        total_sent = sum(c.get('successfully_sent', 0) for c in campaigns)
-        total_opened = sum(c.get('opened', 0) for c in campaigns)
-        total_clicked = sum(c.get('clicked', 0) for c in campaigns)
-        total_bounced = sum(c.get('bounced', 0) for c in campaigns)
+        # Calculate aggregated stats from tracking collection for accuracy
+        tracking_collection = db_manager.db['email_tracking']
+        campaign_ids = [c.get('campaign_id') for c in campaigns if c.get('campaign_id')]
+        
+        # Get all tracking docs for user's campaigns
+        tracking_docs = list(tracking_collection.find({'campaign_id': {'$in': campaign_ids}}))
+        
+        print(f"📊 Dashboard Analytics Debug:")
+        print(f"   Total campaigns: {len(campaigns)}")
+        print(f"   Campaign IDs: {campaign_ids[:5]}..." if len(campaign_ids) > 5 else f"   Campaign IDs: {campaign_ids}")
+        print(f"   Total tracking docs: {len(tracking_docs)}")
+        
+        # Calculate stats from tracking data
+        # Count all tracking docs as total attempts
+        total_tracking_attempts = len(tracking_docs)
+        
+        if total_tracking_attempts > 0:
+            # Use tracking collection data (more accurate)
+            # Count bounced and errors (treat None/missing as False)
+            total_bounced = sum(1 for doc in tracking_docs if doc.get('bounced') == True)
+            total_app_errors = sum(1 for doc in tracking_docs if doc.get('application_error') == True)
+            
+            # Successfully sent = total attempts - bounced - app errors
+            total_sent = total_tracking_attempts - total_bounced - total_app_errors
+            
+            print(f"   Total attempts: {total_tracking_attempts}")
+            print(f"   Total bounced: {total_bounced}")
+            print(f"   Total app errors: {total_app_errors}")
+            print(f"   Total sent (calculated): {total_sent}")
+            # Count engagement metrics
+            total_opened = sum(1 for doc in tracking_docs if doc.get('opens', 0) > 0)
+            total_clicked = sum(1 for doc in tracking_docs if doc.get('clicks', 0) > 0)
+            total_replied = sum(1 for doc in tracking_docs if doc.get('replies', 0) > 0)
+        else:
+            # Fallback to campaign document values when no tracking data
+            print(f"⚠️ No tracking documents found, using campaign document values")
+            total_sent = sum(c.get('sent_count', 0) for c in campaigns)
+            total_opened = sum(c.get('opened', 0) for c in campaigns)
+            total_clicked = sum(c.get('clicked', 0) for c in campaigns)
+            total_bounced = sum(c.get('bounce_count', 0) for c in campaigns)
+            total_replied = 0  # Not stored in campaign docs
         
         # Calculate rates
         open_rate = (total_opened / total_sent * 100) if total_sent > 0 else 0
         click_rate = (total_clicked / total_sent * 100) if total_sent > 0 else 0
-        bounce_rate = (total_bounced / total_sent * 100) if total_sent > 0 else 0
+        bounce_rate = (total_bounced / (total_sent + total_bounced) * 100) if (total_sent + total_bounced) > 0 else 0
+        reply_rate = (total_replied / total_sent * 100) if total_sent > 0 else 0
         
         # Calculate active campaigns based on start_time and duration
+        # IMPORTANT: Exclude stopped campaigns from active count
         now = datetime.now(timezone.utc)
         active_campaigns_count = 0
         for campaign in campaigns:
+            # Skip stopped campaigns - they should never be counted as active
+            if campaign.get('status') == 'stopped':
+                continue
+                
             if campaign.get('start_time') and campaign.get('duration'):
                 start_time = campaign.get('start_time')
                 if isinstance(start_time, str):
@@ -3148,7 +3462,8 @@ def get_dashboard_analytics():
                 active_campaigns_count += 1
         
         # Get recent campaigns (last 5)
-        recent_campaigns = sorted(campaigns, key=lambda x: x.get('created_at', datetime.min), reverse=True)[:5]
+        # Use timezone-aware datetime.min to avoid comparison errors
+        recent_campaigns = sorted(campaigns, key=lambda x: x.get('created_at', datetime.min.replace(tzinfo=timezone.utc)), reverse=True)[:5]
         
         formatted_recent = []
         for campaign in recent_campaigns:
@@ -3161,19 +3476,158 @@ def get_dashboard_analytics():
                 'open_rate': campaign.get('open_rate', 0)
             })
         
+        # Calculate time-based analytics
+        from datetime import timedelta
+        
+        # Define time ranges
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = now - timedelta(days=7)
+        month_start = now - timedelta(days=30)
+        
+        print(f"   Time ranges:")
+        print(f"     now: {now} (tzinfo: {now.tzinfo})")
+        print(f"     today_start: {today_start} (tzinfo: {today_start.tzinfo})")
+        print(f"     week_start: {week_start} (tzinfo: {week_start.tzinfo})")
+        print(f"     month_start: {month_start} (tzinfo: {month_start.tzinfo})")
+        
+        # Helper function to filter tracking docs by date
+        def filter_by_date(docs, start_date):
+            filtered = []
+            for doc in docs:
+                sent_at = doc.get('sent_at')
+                if not sent_at:
+                    continue
+                    
+                # Convert string to datetime if needed
+                if isinstance(sent_at, str):
+                    try:
+                        sent_at = datetime.fromisoformat(sent_at.replace('Z', '+00:00'))
+                    except Exception as e:
+                        print(f"     ⚠️  Failed to parse sent_at string: {sent_at}, error: {e}")
+                        continue
+                
+                # Ensure it's a datetime object
+                if not isinstance(sent_at, datetime):
+                    print(f"     ⚠️  sent_at is not a datetime: {type(sent_at)}")
+                    continue
+                
+                # Ensure timezone-aware
+                if sent_at.tzinfo is None:
+                    sent_at = sent_at.replace(tzinfo=timezone.utc)
+                
+                # Compare dates with error handling
+                try:
+                    if sent_at >= start_date:
+                        filtered.append(doc)
+                except TypeError as e:
+                    print(f"     ❌ Comparison error: {e}")
+                    print(f"        sent_at: {sent_at} (type: {type(sent_at)}, tzinfo: {sent_at.tzinfo if hasattr(sent_at, 'tzinfo') else 'N/A'})")
+                    print(f"        start_date: {start_date} (type: {type(start_date)}, tzinfo: {start_date.tzinfo if hasattr(start_date, 'tzinfo') else 'N/A'})")
+                    continue
+            return filtered
+        
+        # Calculate today's metrics
+        today_docs = filter_by_date(tracking_docs, today_start)
+        today_bounced = sum(1 for doc in today_docs if doc.get('bounced') == True)
+        today_app_errors = sum(1 for doc in today_docs if doc.get('application_error') == True)
+        today_sent = len(today_docs) - today_bounced - today_app_errors
+        today_opened = sum(1 for doc in today_docs if doc.get('opens', 0) > 0)
+        today_clicked = sum(1 for doc in today_docs if doc.get('clicks', 0) > 0)
+        
+        # Calculate last week's metrics
+        week_docs = filter_by_date(tracking_docs, week_start)
+        week_bounced = sum(1 for doc in week_docs if doc.get('bounced') == True)
+        week_app_errors = sum(1 for doc in week_docs if doc.get('application_error') == True)
+        week_sent = len(week_docs) - week_bounced - week_app_errors
+        week_opened = sum(1 for doc in week_docs if doc.get('opens', 0) > 0)
+        week_clicked = sum(1 for doc in week_docs if doc.get('clicks', 0) > 0)
+        
+        # Calculate last month's metrics
+        month_docs = filter_by_date(tracking_docs, month_start)
+        month_bounced = sum(1 for doc in month_docs if doc.get('bounced') == True)
+        month_app_errors = sum(1 for doc in month_docs if doc.get('application_error') == True)
+        month_sent = len(month_docs) - month_bounced - month_app_errors
+        month_opened = sum(1 for doc in month_docs if doc.get('opens', 0) > 0)
+        month_clicked = sum(1 for doc in month_docs if doc.get('clicks', 0) > 0)
+        
+        # Calculate daily breakdown for last 30 days
+        daily_stats = []
+        for i in range(30, -1, -1):  # Last 30 days including today
+            day_start = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day_start + timedelta(days=1)
+            
+            # Filter documents for this day, ensuring timezone-aware comparison
+            day_docs = []
+            for doc in tracking_docs:
+                sent_at = doc.get('sent_at')
+                if not sent_at or not isinstance(sent_at, datetime):
+                    continue
+                
+                # Ensure timezone-aware
+                if sent_at.tzinfo is None:
+                    sent_at = sent_at.replace(tzinfo=timezone.utc)
+                
+                # Check if within day range
+                if day_start <= sent_at < day_end:
+                    day_docs.append(doc)
+            
+            day_bounced = sum(1 for doc in day_docs if doc.get('bounced') == True)
+            day_app_errors = sum(1 for doc in day_docs if doc.get('application_error') == True)
+            day_sent = len(day_docs) - day_bounced - day_app_errors
+            day_opened = sum(1 for doc in day_docs if doc.get('opens', 0) > 0)
+            day_clicked = sum(1 for doc in day_docs if doc.get('clicks', 0) > 0)
+            
+            daily_stats.append({
+                'date': day_start.strftime('%Y-%m-%d'),
+                'sent': day_sent,
+                'opened': day_opened,
+                'clicked': day_clicked,
+                'bounced': day_bounced
+            })
+        
+        
         return jsonify({
+            # Overall totals
             'total_sent': total_sent,
             'total_opened': total_opened,
             'total_clicked': total_clicked,
             'total_bounced': total_bounced,
-            'total_replied': 0,  # TODO: Implement reply tracking
+            'total_replied': total_replied,
             'open_rate': round(open_rate, 2),
             'click_rate': round(click_rate, 2),
             'bounce_rate': round(bounce_rate, 2),
-            'reply_rate': 0,
+            'reply_rate': round(reply_rate, 2),
             'total_campaigns': len(campaigns),
             'active_campaigns': active_campaigns_count,
-            'recent_campaigns': formatted_recent
+            'recent_campaigns': formatted_recent,
+            
+            # Time-based analytics
+            'today': {
+                'sent': today_sent,
+                'opened': today_opened,
+                'clicked': today_clicked,
+                'bounced': today_bounced,
+                'date': today_start.strftime('%Y-%m-%d')
+            },
+            'last_week': {
+                'sent': week_sent,
+                'opened': week_opened,
+                'clicked': week_clicked,
+                'bounced': week_bounced,
+                'start_date': week_start.strftime('%Y-%m-%d'),
+                'end_date': now.strftime('%Y-%m-%d')
+            },
+            'last_month': {
+                'sent': month_sent,
+                'opened': month_opened,
+                'clicked': month_clicked,
+                'bounced': month_bounced,
+                'start_date': month_start.strftime('%Y-%m-%d'),
+                'end_date': now.strftime('%Y-%m-%d')
+            },
+            
+            # Daily breakdown for charts
+            'daily_stats': daily_stats
         })
         
     except Exception as error:
@@ -3183,6 +3637,47 @@ def get_dashboard_analytics():
         return jsonify({'error': str(error)}), 500
 
 # ==================== END DASHBOARD ANALYTICS ENDPOINT ====================
+
+@main_bp.route('/get-email-tracking')
+def get_all_email_tracking():
+    """Get all email tracking data, optionally filtered by campaign_id"""
+    try:
+        campaign_id = request.args.get('campaign_id')
+        tracking_collection = db_manager.db['email_tracking']
+        
+        query = {}
+        if campaign_id:
+            query['campaign_id'] = campaign_id
+            
+        tracking_docs = list(tracking_collection.find(query).sort('sent_at', -1))
+        
+        # Convert to JSON-serializable format
+        for doc in tracking_docs:
+            doc['_id'] = str(doc['_id'])
+            if 'sent_at' in doc and doc['sent_at']:
+                doc['sent_at'] = doc['sent_at'].isoformat()
+            if 'first_open' in doc and doc['first_open']:
+                doc['first_open'] = doc['first_open'].isoformat()
+            if 'first_click' in doc and doc['first_click']:
+                doc['first_click'] = doc['first_click'].isoformat()
+            if 'reply_date' in doc and doc['reply_date']:
+                doc['reply_date'] = doc['reply_date'].isoformat()
+            if 'bounce_date' in doc and doc['bounce_date']:
+                doc['bounce_date'] = doc['bounce_date'].isoformat()
+            if 'unsubscribe_date' in doc and doc['unsubscribe_date']:
+                doc['unsubscribe_date'] = doc['unsubscribe_date'].isoformat()
+            if 'error_date' in doc and doc['error_date']:
+                doc['error_date'] = doc['error_date'].isoformat()
+                
+            # Ensure boolean fields
+            doc['bounced'] = doc.get('bounced', False)
+            doc['application_error'] = doc.get('application_error', False)
+            
+        return jsonify({'success': True, 'tracking': tracking_docs})
+        
+    except Exception as error:
+        print(f"Error getting all email tracking: {error}")
+        return jsonify({'error': f'Error fetching tracking data: {str(error)}'}), 500
 
 # ==================== CAMPAIGN CREATION ENDPOINT ====================
 
@@ -3206,7 +3701,9 @@ def send_mail():
         mailbox_id = data.get('mailbox_id')
         start_time_str = data.get('start_time')  # ISO datetime string
         duration = data.get('duration', 24)  # Total duration in hours
-        send_interval = data.get('send_interval', 5)  # Minutes between each email
+        duration = data.get('duration', 24)  # Total duration in hours
+        # send_interval will be calculated later if not provided, defaulting to 5 initially
+        send_interval = data.get('send_interval', 5)
         
         # Validate required fields
         if not subject:
@@ -3219,7 +3716,7 @@ def send_mail():
             return jsonify({'error': 'Mailbox ID is required'}), 400
         
         # Check database availability
-        if not db_manager or not db_manager.db:
+        if not db_manager or db_manager.db is None:
             return jsonify({'error': 'Database not available'}), 503
         
         campaigns_collection = db_manager.db['email_campaigns']
@@ -3269,7 +3766,9 @@ def send_mail():
             wait_minutes = (start_datetime - now_utc).total_seconds() / 60
             print(f"⏰ Campaign will start in {wait_minutes:.1f} minutes")
         else:
-            print(f"⚡ Campaign will start immediately (start time is in the past)")
+            print(f"⚡ Start time is in the past. Resetting start_time to NOW to respect duration.")
+            start_datetime = now_utc
+
         
         # Check for campaign time conflicts
         conflicts = check_campaign_conflicts(clerk_user_id, start_datetime, duration)
@@ -3304,12 +3803,45 @@ def send_mail():
             
             valid_recipients.append(recipient)
         
+        
         if not valid_recipients:
             return jsonify({
                 'error': 'No valid recipients',
                 'invalid_recipients': invalid_recipients,
                 'unsubscribed_recipients': unsubscribed_recipients
             }), 400
+
+        # Calculate optimal interval based on duration
+        try:
+            # Ensure numbers
+            duration_val = float(duration)
+            send_interval_val = float(send_interval)
+            
+            if len(valid_recipients) > 1:
+                total_minutes = duration_val * 60
+                # Use 95% of duration to be safe
+                effective_minutes = total_minutes * 0.95
+                calculated_interval = effective_minutes / len(valid_recipients)
+                
+                # If the calculated interval is significantly larger than the provided interval,
+                # it means the user likely wants to spread the emails over the duration.
+                # We'll use the larger of the two to ensure we fill the duration.
+                if calculated_interval > send_interval_val:
+                    print(f"⚖️  Adjusting interval: User={send_interval_val}m, Calculated={calculated_interval:.2f}m. Using Calculated.")
+                    send_interval = calculated_interval
+                else:
+                    print(f"⚖️  Using user interval: {send_interval_val}m (Calculated was {calculated_interval:.2f}m)")
+                    
+                # Ensure minimum interval
+                min_interval = 1.0
+                if hasattr(Config, 'MIN_DELAY_BETWEEN_EMAILS'):
+                    min_interval = float(Config.MIN_DELAY_BETWEEN_EMAILS)
+                
+                send_interval = max(send_interval, min_interval)
+            
+        except Exception as e:
+            print(f"⚠️ Error calculating optimal interval: {e}")
+
         
         # Create campaign
         campaign_id = str(uuid.uuid4())
@@ -3398,7 +3930,7 @@ def send_mail():
 def get_campaign_status(campaign_id):
     """Get real-time campaign status"""
     try:
-        if not db_manager or not db_manager.db:
+        if not db_manager or db_manager.db is None:
             return jsonify({'error': 'Database not available'}), 503
         
         campaigns_collection = db_manager.db['email_campaigns']
@@ -3450,6 +3982,45 @@ def get_campaign_status(campaign_id):
 # ==================== END CAMPAIGN STATUS ENDPOINT ====================
 
 
+@main_bp.route('/api/campaigns/<campaign_id>/stop', methods=['POST', 'OPTIONS'])
+def stop_campaign(campaign_id):
+    """Stop a running campaign"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,X-Clerk-User-Id')
+        response.headers.add('Access-Control-Allow-Methods', 'POST,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+    
+    try:
+        if not db_manager or db_manager.db is None:
+            return jsonify({'error': 'Database not available'}), 503
+
+        campaigns_collection = db_manager.db['email_campaigns']
+        
+        # Update status to stopped
+        result = campaigns_collection.update_one(
+            {'campaign_id': campaign_id},
+            {'$set': {
+                'status': 'stopped',
+                'updated_at': datetime.now(timezone.utc)
+            }}
+        )
+        
+        if result.matched_count == 0:
+            return jsonify({'error': 'Campaign not found'}), 404
+            
+        print(f"🛑 Campaign {campaign_id} stopped via API")
+        return jsonify({'success': True, 'message': 'Campaign stopped'})
+        
+    except Exception as e:
+        print(f"❌ Error stopping campaign: {e}")
+        return jsonify({'error': str(e)}), 500
+
+print("✅ Stop campaign endpoint registered at /api/campaigns/<campaign_id>/stop")
+
 # Register blueprint
 app.register_blueprint(main_bp)
 
@@ -3458,7 +4029,7 @@ app.register_blueprint(main_bp)
 # atexit.register(lambda: background_service.stop())
 
 if __name__ == "__main__":
-    print("🚀 Starting Email Warmup Application")
+    print("🚀 Starting Email Warmup Application (Version: Fix-Scheduling-v2)")
     print(f"📊 Database: {Config.DATABASE_NAME}")
     print(f"🔧 Port: {Config.PORT}")
     if db_manager and db_manager.db is not None:

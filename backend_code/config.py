@@ -12,7 +12,8 @@ class Config:
     TENANT_ID = os.getenv("TENANT_ID")
     PORT = int(os.getenv("PORT", 5000))
     REDIRECT_URI = os.getenv("REDIRECT_URI")
-    BASE_URL = os.getenv("BASE_URL")
+    BASE_URL = os.getenv("BASE_URL")  # Backend base URL (required)
+    FRONTEND_URL = os.getenv("FRONTEND_URL")  # Frontend URL for CORS and redirects (required)
     MIN_DELAY_BETWEEN_EMAILS = os.getenv("MIN_DELAY_BETWEEN_EMAILS", 60)
     MAX_DELAY_BETWEEN_EMAILS = int(os.getenv("MAX_DELAY_BETWEEN_EMAILS", 100))
     AUTHORITY = "https://login.microsoftonline.com/common"

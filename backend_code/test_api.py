@@ -7,10 +7,15 @@ Tests all API endpoints to ensure they work correctly
 import requests
 import json
 import sys
+import os
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configuration
-BASE_URL = "http://localhost:5000"  # Change if your server runs on different port
+BASE_URL = os.getenv("API_URL", os.getenv("BASE_URL", "http://localhost:5000"))  # Use API_URL or BASE_URL from .env
 TEST_EMAIL = "test@example.com"  # Change to a test email
 TEST_CAMPAIGN_ID = None  # Will be set after sending email
 TEST_TRACKING_ID = None  # Will be set after sending email

@@ -2,11 +2,12 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowUpRight, Mail, MousePointerClick, Send, Users, Inbox, TrendingUp, Calendar } from "lucide-react";
+import { ArrowUpRight, Mail, MousePointerClick, Send, Users, Inbox, TrendingUp, Calendar, Clock, BarChart3 } from "lucide-react";
 import { useDashboardStats, useCampaigns, useEmailAccounts } from "@/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
 import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
+import AnalyticsChart from "@/components/Dashboard/AnalyticsChart";
 
 export default function DashboardPage() {
     const { user } = useAuth();
@@ -18,8 +19,12 @@ export default function DashboardPage() {
     const accounts = accountsData?.accounts || [];
 
     // Calculate active campaigns (campaigns that are currently running based on start_time and duration)
+    // IMPORTANT: Exclude stopped campaigns from active count
     const now = new Date();
     const activeCampaigns = campaigns.filter((campaign: any) => {
+        // Stopped campaigns should never be counted as active
+        if (campaign.status === 'stopped') return false;
+
         if (!campaign.start_time || !campaign.duration) return false;
         const startTime = new Date(campaign.start_time);
         const endTime = new Date(startTime.getTime() + campaign.duration * 60 * 60 * 1000); // duration in hours
@@ -165,6 +170,107 @@ export default function DashboardPage() {
                 </Card>
             </div>
 
+            {/* Time-Based Analytics */}
+            <div className="mt-2">
+                <div className="flex items-center gap-2 mb-4">
+                    <BarChart3 className="h-5 w-5 text-gray-700" />
+                    <h2 className="text-lg font-semibold text-gray-800">Performance Overview</h2>
+                </div>
+                <div className="grid gap-4 md:grid-cols-3 mb-6">
+                    {/* Today's Metrics */}
+                    <Card className="border-l-4 border-l-blue-500 hover:shadow-md transition-all">
+                        <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between">
+                                <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                                    <Clock className="h-4 w-4" />
+                                    Today
+                                </CardTitle>
+                                <span className="text-xs text-muted-foreground">
+                                    {stats?.today?.date || new Date().toLocaleDateString()}
+                                </span>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="space-y-2">
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Sent</span>
+                                <span className="text-lg font-bold text-blue-600">{stats?.today?.sent || 0}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Opened</span>
+                                <span className="text-sm font-semibold text-green-600">{stats?.today?.opened || 0}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Clicked</span>
+                                <span className="text-sm font-semibold text-purple-600">{stats?.today?.clicked || 0}</span>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    {/* Last Week's Metrics */}
+                    <Card className="border-l-4 border-l-green-500 hover:shadow-md transition-all">
+                        <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between">
+                                <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                                    <Calendar className="h-4 w-4" />
+                                    Last 7 Days
+                                </CardTitle>
+                                <span className="text-xs text-muted-foreground">
+                                    {stats?.last_week?.start_date ? new Date(stats.last_week.start_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
+                                </span>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="space-y-2">
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Sent</span>
+                                <span className="text-lg font-bold text-blue-600">{stats?.last_week?.sent || 0}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Opened</span>
+                                <span className="text-sm font-semibold text-green-600">{stats?.last_week?.opened || 0}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Clicked</span>
+                                <span className="text-sm font-semibold text-purple-600">{stats?.last_week?.clicked || 0}</span>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    {/* Last Month's Metrics */}
+                    <Card className="border-l-4 border-l-purple-500 hover:shadow-md transition-all">
+                        <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between">
+                                <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                                    <TrendingUp className="h-4 w-4" />
+                                    Last 30 Days
+                                </CardTitle>
+                                <span className="text-xs text-muted-foreground">
+                                    {stats?.last_month?.start_date ? new Date(stats.last_month.start_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
+                                </span>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="space-y-2">
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Sent</span>
+                                <span className="text-lg font-bold text-blue-600">{stats?.last_month?.sent || 0}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Opened</span>
+                                <span className="text-sm font-semibold text-green-600">{stats?.last_month?.opened || 0}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-muted-foreground">Clicked</span>
+                                <span className="text-sm font-semibold text-purple-600">{stats?.last_month?.clicked || 0}</span>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* Analytics Chart */}
+                {stats?.daily_stats && stats.daily_stats.length > 0 && (
+                    <AnalyticsChart data={stats.daily_stats} />
+                )}
+            </div>
+
             {/* Performance Metrics */}
             <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
                 <Card className="hover:shadow-md transition-all duration-300">
@@ -267,7 +373,8 @@ export default function DashboardPage() {
                                                     {campaign.start_time && campaign.duration && (() => {
                                                         const startTime = new Date(campaign.start_time);
                                                         const endTime = new Date(startTime.getTime() + campaign.duration * 60 * 60 * 1000);
-                                                        const isActive = now >= startTime && now <= endTime;
+                                                        // Stopped campaigns should never show as active
+                                                        const isActive = campaign.status !== 'stopped' && now >= startTime && now <= endTime;
                                                         return isActive ? (
                                                             <span className="flex items-center px-2 py-0.5 text-[10px] uppercase tracking-wider font-bold bg-green-100 text-green-700 rounded-full">
                                                                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 mr-1 animate-pulse"></span>

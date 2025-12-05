@@ -36,10 +36,11 @@ export default function CampaignCard({ campaign }: CampaignCardProps) {
     const sentCount = statusData?.sent_count ?? campaign.successfully_sent;
     const failedCount = statusData?.failed_count ?? campaign.bounced; // Mapping failed to bounced for now as simplified view
 
-    // Calculate derived state
-    const isActive = currentStatus === 'active';
+    // Calculate derived state - use is_active from backend if available, otherwise calculate
+    const isStopped = currentStatus === 'stopped';
+    const isActive = campaign.is_active !== undefined ? campaign.is_active : (currentStatus === 'active');
     const isScheduled = currentStatus === 'scheduled';
-    const isCompleted = currentStatus === 'completed';
+    const isCompleted = currentStatus === 'completed' || (!isActive && !isScheduled && !isStopped);
 
     // Calculate progress percentage
     const totalRecipients = campaign.total_recipients || 0;
@@ -67,16 +68,22 @@ export default function CampaignCard({ campaign }: CampaignCardProps) {
                                         Active
                                     </Badge>
                                 )}
-                                {isScheduled && (
+                                {isStopped && (
+                                    <Badge variant="destructive" className="gap-1.5 bg-red-100 text-red-700 hover:bg-red-200 border-red-200">
+                                        <AlertCircle className="h-3 w-3" />
+                                        Stopped
+                                    </Badge>
+                                )}
+                                {isScheduled && !isStopped && (
                                     <Badge variant="secondary" className="gap-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200">
                                         <Calendar className="h-3 w-3" />
                                         Scheduled
                                     </Badge>
                                 )}
-                                {isCompleted && (
+                                {isCompleted && !isActive && !isStopped && (
                                     <Badge variant="outline" className="gap-1.5 text-muted-foreground">
                                         <CheckCircle2 className="h-3 w-3" />
-                                        Completed
+                                        Closed
                                     </Badge>
                                 )}
                                 {failedCount > 0 && (

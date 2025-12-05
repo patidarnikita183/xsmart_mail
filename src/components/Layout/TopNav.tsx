@@ -3,7 +3,8 @@
 import { Bell, Search, User } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/contexts/AuthContext";
+import { useUser, useClerk } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -12,10 +13,27 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 export function TopNav() {
-    const { user, logout } = useAuth();
+    const { user } = useUser();
+    const { signOut } = useClerk();
+    const router = useRouter();
+
+    const handleProfileClick = () => {
+        router.push("/settings");
+    };
+
+    const handleSettingsClick = () => {
+        router.push("/settings");
+    };
+
+    const handleLogout = async () => {
+        await signOut();
+        router.push("/");
+    };
+
+    const userInitials = user?.firstName?.[0] + (user?.lastName?.[0] || "");
 
     return (
         <header className="sticky top-0 z-30 flex h-16 items-center gap-4 border-b bg-background px-6">
@@ -38,8 +56,9 @@ export function TopNav() {
                     <DropdownMenuTrigger asChild>
                         <Button variant="ghost" className="relative h-8 w-8 rounded-full">
                             <Avatar className="h-8 w-8">
-                                <AvatarFallback>
-                                    {user?.displayName?.charAt(0) || <User className="h-4 w-4" />}
+                                <AvatarImage src={user?.imageUrl} alt={user?.fullName || "User"} />
+                                <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white text-xs">
+                                    {userInitials || <User className="h-4 w-4" />}
                                 </AvatarFallback>
                             </Avatar>
                         </Button>
@@ -47,17 +66,17 @@ export function TopNav() {
                     <DropdownMenuContent className="w-56" align="end">
                         <DropdownMenuLabel className="font-normal">
                             <div className="flex flex-col space-y-1">
-                                <p className="text-sm font-medium leading-none">{user?.displayName || 'User'}</p>
+                                <p className="text-sm font-medium leading-none">{user?.fullName || 'User'}</p>
                                 <p className="text-xs leading-none text-muted-foreground">
-                                    {user?.email || ''}
+                                    {user?.primaryEmailAddress?.emailAddress || ''}
                                 </p>
                             </div>
                         </DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem>Profile</DropdownMenuItem>
-                        <DropdownMenuItem>Settings</DropdownMenuItem>
+                        <DropdownMenuItem onClick={handleProfileClick}>Profile</DropdownMenuItem>
+                        <DropdownMenuItem onClick={handleSettingsClick}>Settings</DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={logout}>Log out</DropdownMenuItem>
+                        <DropdownMenuItem onClick={handleLogout}>Log out</DropdownMenuItem>
                     </DropdownMenuContent>
                 </DropdownMenu>
             </div>

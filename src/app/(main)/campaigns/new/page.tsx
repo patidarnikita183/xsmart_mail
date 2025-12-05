@@ -155,16 +155,23 @@ export default function NewCampaignPage() {
 
             const response = await createCampaign.mutateAsync(campaignPayload);
 
-            // Show warning if there are active campaigns
-            if (response?.warning) {
-                toast.warning(response.warning, {
-                    description: `You have ${response.active_campaigns?.length || 0} active campaign(s) running.`,
-                    duration: 5000,
-                });
-            }
-
-            toast.success("Campaign created successfully!");
+            // Show success message and redirect immediately (campaign runs in background)
+            toast.success("Campaign launched successfully! Running in background...", {
+                duration: 3000,
+            });
+            
+            // Redirect immediately - campaign runs in background
             router.push("/campaigns");
+            
+            // Show warning if there are active campaigns (after redirect)
+            if (response?.warning) {
+                setTimeout(() => {
+                    toast.warning(response.warning, {
+                        description: `You have ${response.active_campaigns?.length || 0} active campaign(s) running.`,
+                        duration: 5000,
+                    });
+                }, 500);
+            }
         } catch (error: any) {
             // Extract error message from response
             const errorMessage = error?.response?.data?.error || error?.response?.data?.details || error?.message || "Failed to create campaign";

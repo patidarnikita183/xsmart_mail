@@ -12,7 +12,13 @@ export async function POST(request: NextRequest) {
             );
         }
         
-        const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+        const backendUrl = process.env.NEXT_PUBLIC_API_URL;
+        if (!backendUrl) {
+            return NextResponse.json(
+                { success: false, error: 'NEXT_PUBLIC_API_URL environment variable is not set' },
+                { status: 500 }
+            );
+        }
         
         // Get cookies from the incoming request to forward to backend
         const cookies = request.cookies.getAll();
