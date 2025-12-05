@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+// Fix: Removed unused react-dropzone import
 import Papa from "papaparse";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
